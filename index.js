@@ -1,142 +1,142 @@
+require('dotenv').config()
 const express = require('express')
 const morgan = require('morgan')
 const cors = require('cors')
+
+const Person = require('./models/person')
+
 const app = express()
 
+// Middlewares
 app.use(cors())
 app.use(express.static('dist'))
-
 app.use(express.json())
 
-// Definimos un token para loguear el cuerpo de la petición POST
+// Logger simple (opcional, parecido a requestLogger)
+const requestLogger = (request, response, next) => {
+  console.log('Method: ', request.method)
+  console.log('Path:   ', request.path)
+  console.log('Body:   ', request.body)
+  console.log('---------------------------')
+  next()
+}
+app.use(requestLogger)
+
+// Morgan: token para body en POST/PUT
 morgan.token('body', (req) => {
-  return req.method === 'POST' || req.method === 'PUT' && req.body && Object.keys(req.body).length
+  return (req.method === 'POST' || req.method === 'PUT') && req.body && Object.keys(req.body).length
     ? JSON.stringify(req.body)
     : '-'
 })
-
 app.use(morgan(':method :url :status :res[content-length] - :response-time ms :body'))
 
-// ====== DATOS EN MEMORIA (SIMULACIÓN DE BASE DE DATOS) ======
-let persons = [
-  {
-    id: 1,
-    name: 'Arto Hellas',
-    number: '040-123456'
-  },
-  {
-    id: 2,
-    name: 'Ada Lovelace',
-    number: '39-44-5323523'
-  },
-  {
-    id: 3,
-    name: 'Dan Abramov',
-    number: '12-43-234345'
-  },
-  {
-    id: 4,
-    name: 'Mary Poppendieck',
-    number: '39-23-6423122'
-  }
-]
+// RUTAS
 
-const generateId = () => {
-  return Number(Date.now().toString().slice(-3)) + Math.floor(Math.random() * 100)
-}
-
-const nameExists = (name) => {
-  return persons.some(p => p.name === name)
-}
-
-// ====== RUTAS DE LA API ======
-
-app.get('/api/persons', (request, response) => {
-  response.json(persons)
+// Obtener todas las personas desde MongoDB
+app.get('/api/persons', (req, res) => {
+  Person.find({}).then(persons => {
+    res.json(persons)
+  })
 })
 
-app.get('/info', (request, response) => {
-  const count = persons.length
+// Info (número de personas + fecha)
+app.get('/info', async (req, res) => {
+  const count = await Person.countDocuments({})
   const now = new Date()
-  const html = `<p>Phonebook has info for ${count} people</p><p>${now}</p>`
-  response.send(html)
+  res.send(`<p>Phonebook has info for ${count} people</p><p>${now}</p>`)
 })
 
-app.get('/api/persons/:id', (request, response) => {
-  const id = Number(request.params.id)
-  const person = persons.find(p => p.id === id)
-  if (person) {
-    response.json(person)
-  } else {
-    response.status(404).end()
-  }
+// Obtener por id
+app.get('/api/persons/:id', (req, res, next) => {
+  Person.findById(req.params.id)
+    .then(person => {
+      if (person) {
+        res.json(person)
+      } else {
+        res.status(404).end()
+      }
+    })
+    .catch(error => next(error))
 })
 
-app.delete('/api/persons/:id', (request, response) => {
-  const id = Number(request.params.id)
-  persons = persons.filter(p => p.id !== id)
-  console.log('Deleting...', id)
-  response.status(204).end()
+// Borrar por id
+app.delete('/api/persons/:id', (req, res, next) => {
+  Person.findByIdAndDelete(req.params.id)
+    .then(() => {
+      res.status(204).end()
+    })
+    .catch(error => next(error))
 })
 
-app.post('/api/persons', (request, response) => {
-  const body = request.body
+// Crear nuevo
+app.post('/api/persons', (req, res, next) => {
+  const body = req.body
 
   if (!body.name) {
-    return response.status(400).json({ error: 'name is missing' })
+    return res.status(400).json({ error: 'name is missing' })
   }
   if (!body.number) {
-    return response.status(400).json({ error: 'number is missing' })
-  }
-  if (nameExists(body.name)) {
-    return response.status(400).json({ error: 'name must be unique' })
+    return res.status(400).json({ error: 'number is missing' })
   }
 
-  const person = {
-    id: generateId(),
+  const person = new Person({
+    name: body.name,
+    number: body.number
+  })
+
+  person.save()
+    .then(savedPerson => {
+      res.json(savedPerson)
+    })
+    .catch(error => next(error))
+})
+
+// Actualizar (PUT)
+app.put('/api/persons/:id', (req, res, next) => {
+  const body = req.body
+
+  if (!body.name || !body.number) {
+    return res.status(400).json({ error: 'name or number is missing' })
+  }
+
+  const updated = {
     name: body.name,
     number: body.number
   }
 
-  persons = persons.concat(person)
-  console.log('Adding...', person)
-  response.json(person)
-})
-
-// 🚀 RUTA PUT: Implementación de la actualización de un recurso
-app.put('/api/persons/:id', (request, response) => {
-  const id = Number(request.params.id)
-  const body = request.body
-
-  if (!body.name || !body.number) {
-    return response.status(400).json({
-      error: 'name or number is missing'
+  // runValidators:true for schema validation on update
+  Person.findByIdAndUpdate(req.params.id, updated, { new: true, runValidators: true, context: 'query' })
+    .then(result => {
+      if (result) {
+        res.json(result)
+      } else {
+        res.status(404).end()
+      }
     })
-  }
-
-  const personIndex = persons.findIndex(p => p.id === id)
-
-  if (personIndex !== -1) {
-    const updatedPerson = {
-      ...persons[personIndex], // Mantiene el ID existente
-      name: body.name,
-      number: body.number
-    }
-
-    persons[personIndex] = updatedPerson // Reemplaza el objeto en el array
-    console.log('Updating...', updatedPerson)
-    response.json(updatedPerson)
-  } else {
-    response.status(404).json({ error: 'person not found' })
-  }
+    .catch(error => next(error))
 })
 
-// Middleware para rutas inexistentes (API)
-app.use((request, response) => {
-  response.status(404).send({ error: 'Ruta desconocida' })
-})
+// Middleware para rutas desconocidas
+const unknownEndpoint = (req, res) => {
+  res.status(404).send({ error: 'Ruta desconocida' })
+}
+app.use(unknownEndpoint)
 
-// ====== INICIO DEL SERVIDOR ======
+// Manejador de errores
+const errorHandler = (error, req, res, next) => {
+  console.error(error.message)
+
+  if (error.name === 'CastError') {
+    return res.status(400).send({ error: 'malformatted id' })
+  } else if (error.name === 'ValidationError') {
+    return res.status(400).json({ error: error.message })
+  }
+
+  next(error)
+}
+app.use(errorHandler)
+
+// Iniciar servidor
 const PORT = process.env.PORT || 3002
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
